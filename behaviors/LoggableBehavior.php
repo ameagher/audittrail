@@ -1,8 +1,9 @@
 <?php
 
 class LoggableBehavior extends CActiveRecordBehavior{
-
 	private $_oldattributes = array();
+	/** @var $_trail AuditTrail|null */
+	private $_auditTrail = null;
 
 	public $allowed = array();
 	public $ignored = array();
@@ -24,8 +25,8 @@ class LoggableBehavior extends CActiveRecordBehavior{
 
 		// Lets check if the whole class should be ignored
 		if(sizeof($ignoredClasses) > 0){
-				if(array_search(get_class($this->getOwner()), $ignoredClasses) !== false)
-					return;
+			if(array_search(get_class($this->getOwner()), $ignoredClasses) !== false)
+				return;
 		}
 
 		// Lets unset fields which are not allowed
@@ -50,20 +51,20 @@ class LoggableBehavior extends CActiveRecordBehavior{
 			}
 		}
 
-		// If no difference then WHY?
-		// There is some kind of problem here that means "0" and 1 do not diff for array_diff so beware: stackoverflow.com/questions/12004231/php-array-diff-weirdness :S
-		if(count(array_diff_assoc($newattributes, $oldattributes)) <= 0) return;
-
 		// If this is a new record lets add a CREATE notification
 		if ($this->getOwner()->getIsNewRecord())
 			$this->leaveTrail('CREATE');
 
+		// If no difference then WHY?
+		// There is some kind of problem here that means "0" and 1 do not diff for array_diff so beware: stackoverflow.com/questions/12004231/php-array-diff-weirdness :S
+		if(count(array_diff_assoc($newattributes, $oldattributes)) <= 0) return;
+
 		// Now lets actually write the attributes
 		$this->auditAttributes($newattributes, $oldattributes);
-		
+
 		// Reset old attributes to handle the case with the same model instance updated multiple times
 		$this->setOldAttributes($this->getOwner()->getAttributes());
-				
+
 		return parent::afterSave($event);
 	}
 
@@ -79,9 +80,19 @@ class LoggableBehavior extends CActiveRecordBehavior{
 
 			// If they are not the same lets write an audit log
 			if ($value != $old) {
-				$this->leaveTrail($this->getOwner()->getIsNewRecord() ? 'SET' : 'CHANGE', $name, $value, $old);
+				$this->leaveTrailDetail($this->getAuditTrailId(), $name, $value, $old);
 			}
 		}
+	}
+
+	public function getAuditTrailId(){
+		if($this->_auditTrail==null)
+			$this->leaveTrail($this->getOwner()->getIsNewRecord()?'CREATE':'UPDATE');
+
+		if($this->_auditTrail!=null)
+			return $this->_auditTrail->id;
+		else
+			return null;
 	}
 
 	public function afterDelete($event){
@@ -102,16 +113,23 @@ class LoggableBehavior extends CActiveRecordBehavior{
 		$this->_oldattributes=$value;
 	}
 
-	public function leaveTrail($action, $name = null, $value = null, $old_value = null){
+	public function leaveTrail($action){
 		$log			= new AuditTrail();
-		$log->old_value = $old_value;
-		$log->new_value = $value;
 		$log->action	= $action;
 		$log->model		= get_class($this->getOwner()); // Gets a plain text version of the model name
-		$log->model_id	= $this->getNormalizedPk();
+		$log->model_pk	= $this->getNormalizedPk();
+		$log->occurredOn		= $this->storeTimestamp ? time() : date($this->dateFormat); // If we are storing a timestamp lets get one else lets get the date
+		$log->id_users	= $this->getUserId(); // Lets get the user id
+		$log->save();
+		$this->_auditTrail=$log;
+	}
+
+	public function leaveTrailDetail($id_auditTrail, $name = null, $value = null, $oldValue = null){
+		$log			= new AuditTrailDetail();
+		$log->id_auditTrail	= $id_auditTrail;
 		$log->field		= $name;
-		$log->stamp		= $this->storeTimestamp ? time() : date($this->dateFormat); // If we are storing a timestamp lets get one else lets get the date
-		$log->user_id	= $this->getUserId(); // Lets get the user id
+		$log->oldValue  = $oldValue;
+		$log->newValue  = $value;
 		return $log->save();
 	}
 
